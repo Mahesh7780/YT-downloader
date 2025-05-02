@@ -4,32 +4,27 @@ import os
 
 app = Flask(__name__)
 
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-def download_yt_video(url):
-    ydl_opts = {
-        'format': 'bestvideo[height<=1080]',
-        'noplaylist': True,
-        'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s'
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        return filename
-
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/')
 def index():
-    if request.method == 'POST':
-        url = request.form['url']
-        try:
-            file_path = download_yt_video(url)
-            return send_file(file_path, as_attachment=True)
-        except Exception as e:
-            return f"<h2>Error: {str(e)}</h2>"
     return render_template('index.html')
 
+@app.route('/download', methods=['POST'])
+def download():
+    url = request.form['url']
+    try:
+        ydl_opts = {
+            'cookies': 'cookies.txt',  # 👈 tell yt-dlp to use your YouTube cookies
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+        
+        return send_file(filename, as_attachment=True)
+    except Exception as e:
+        return f"<h3>Error: {str(e)}</h3><p>Make sure your cookies.txt is up to date.</p>"
+
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    os.makedirs('downloads', exist_ok=True)
+    app.run(debug=True)
