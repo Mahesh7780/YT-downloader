@@ -3,6 +3,7 @@ import yt_dlp
 import os
 
 app = Flask(__name__)
+COOKIE_PATH = "/tmp/cookies.txt"  # Store uploaded cookies here
 
 QUALITY_LEVELS = {
     '360p': (360, 480),
@@ -18,10 +19,17 @@ def index():
     url = ""
 
     if request.method == 'POST':
+        # Handle cookies upload
+        if 'cookies' in request.files:
+            file = request.files['cookies']
+            if file and file.filename.endswith(".txt"):
+                file.save(COOKIE_PATH)
+                return render_template('index.html', url="", formats=[], message="✅ Cookies uploaded successfully.")
+
         url = request.form.get('url')
         format_id = request.form.get('format_id')
 
-        if format_id:
+        if format_id:  # Download step
             try:
                 ydl_opts = {
                     'format': format_id,
@@ -29,6 +37,8 @@ def index():
                     'outtmpl': '/tmp/%(title)s.%(ext)s',
                     'quiet': True
                 }
+                if os.path.exists(COOKIE_PATH):
+                    ydl_opts['cookies'] = COOKIE_PATH
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
@@ -39,17 +49,20 @@ def index():
             except Exception as e:
                 return f"<h3>Error while downloading: {str(e)}</h3>"
 
-        else:
+        elif url:  # Fetch available formats
             try:
                 ydl_opts = {
                     'quiet': True,
-                    'skip_download': True,
+                    'skip_download': True
                 }
+                if os.path.exists(COOKIE_PATH):
+                    ydl_opts['cookies'] = COOKIE_PATH
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
                     all_formats = info.get('formats', [])
 
+                # Get best audio
                 audio_formats = [
                     f for f in all_formats
                     if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('abr') is not None
@@ -57,7 +70,6 @@ def index():
                 best_audio = max(audio_formats, key=lambda x: x['abr']) if audio_formats else None
 
                 quality_formats = {}
-
                 for f in all_formats:
                     height = f.get('height')
                     if not height or f.get('vcodec') == 'none':
