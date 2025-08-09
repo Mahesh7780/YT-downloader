@@ -1,8 +1,9 @@
-from flask import Flask, render_template, request, send_file
+from flask import Flask, render_template, request, send_file, redirect, url_for, session
 import yt_dlp
 import os
 
 app = Flask(__name__)
+app.secret_key = "replace_with_a_secure_secret_key"  # Needed for session storage
 
 COOKIE_PATH = "/tmp/cookies.txt"
 
@@ -14,8 +15,9 @@ QUALITY_LEVELS = {
     '4K': (2000, 10000),
 }
 
-# Helper function for styled error messages
-def styled_message(title, message):
+# Helper function for styled messages
+def styled_message(title, message, back_link=True):
+    back_button = '<a href="/">⬅ Back to Home</a>' if back_link else ''
     return f"""
     <html>
     <head>
@@ -31,14 +33,8 @@ def styled_message(title, message):
                 font-family: Arial, sans-serif;
                 text-align: center;
             }}
-            h1 {{
-                font-size: 2em;
-                margin-bottom: 10px;
-            }}
-            p {{
-                font-size: 1.2em;
-                color: #ccc;
-            }}
+            h1 {{ font-size: 2em; margin-bottom: 10px; }}
+            p {{ font-size: 1.2em; color: #ccc; }}
             a {{
                 color: #ffcc00;
                 text-decoration: none;
@@ -57,7 +53,7 @@ def styled_message(title, message):
     <body>
         <h1>{title}</h1>
         <p>{message}</p>
-        <a href="/">⬅ Back to Home</a>
+        {back_button}
     </body>
     </html>
     """
@@ -69,19 +65,23 @@ def index():
     message = ""
 
     if request.method == 'POST':
-        # --- Handle cookies upload ---
+        # Check if cookies were uploaded
         if 'cookies' in request.files:
             file = request.files['cookies']
             if file and file.filename.endswith(".txt"):
                 file.save(COOKIE_PATH)
                 message = "✅ Cookies uploaded successfully."
-                return render_template('index.html', url="", formats=[], message=message)
+                # Retry the last failed download if it exists
+                if session.get("pending_url"):
+                    url = session["pending_url"]
+                    session.pop("pending_url")
+                else:
+                    return render_template('index.html', url="", formats=[], message=message)
 
-        # --- Get URL and selected format ---
         url = request.form.get('url', '').strip()
         format_id = request.form.get('format_id')
 
-        # --- Step 1: Download video ---
+        # Step 1: Download
         if format_id:
             try:
                 ydl_opts = {
@@ -101,12 +101,15 @@ def index():
 
             except Exception as e:
                 err_text = str(e)
-                if "Requested format is not available" in err_text:
+                if "Sign in to confirm you’re not a bot" in err_text or "This video is private" in err_text:
+                    session["pending_url"] = url
+                    return redirect(url_for("upload_cookies"))
+                elif "Requested format is not available" in err_text:
                     return styled_message("❌ Quality Not Available", "This video is not available in the selected quality. Please choose another quality and try again.")
                 else:
                     return styled_message("⚠️ Download Failed", err_text)
 
-        # --- Step 2: Fetch available formats ---
+        # Step 2: Fetch available formats
         elif url:
             try:
                 ydl_opts = {
@@ -120,19 +123,19 @@ def index():
                     info = ydl.extract_info(url, download=False)
                     all_formats = info.get('formats', [])
 
-                # --- Get best audio format ---
+                # Get best audio
                 audio_formats = [
                     f for f in all_formats
                     if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('abr') is not None
                 ]
                 best_audio = max(audio_formats, key=lambda x: x['abr']) if audio_formats else None
 
-                # --- Filter video formats by quality ---
+                # Quality mapping
                 quality_formats = {}
                 for f in all_formats:
                     height = f.get('height')
                     if not height:
-                        continue  # skip audio-only formats
+                        continue
 
                     for label, (min_h, max_h) in QUALITY_LEVELS.items():
                         if min_h <= height < max_h and label not in quality_formats:
@@ -156,9 +159,36 @@ def index():
                 formats = [quality_formats[q] for q in ordered if q in quality_formats]
 
             except Exception as e:
-                return styled_message("⚠️ Could Not Fetch Formats", str(e))
+                err_text = str(e)
+                if "Sign in to confirm you’re not a bot" in err_text or "This video is private" in err_text:
+                    session["pending_url"] = url
+                    return redirect(url_for("upload_cookies"))
+                else:
+                    return styled_message("⚠️ Could Not Fetch Formats", err_text)
 
     return render_template('index.html', url=url, formats=formats, message=message)
+
+@app.route('/upload-cookies', methods=['GET', 'POST'])
+def upload_cookies():
+    if request.method == 'POST':
+        file = request.files.get('cookies')
+        if file and file.filename.endswith(".txt"):
+            file.save(COOKIE_PATH)
+            message = "✅ Cookies uploaded successfully."
+            if session.get("pending_url"):
+                url = session["pending_url"]
+                session.pop("pending_url")
+                return redirect(url_for("index"))
+            return render_template('index.html', url="", formats=[], message=message)
+        else:
+            return styled_message("⚠️ Invalid File", "Please upload a valid cookies.txt file.")
+    return styled_message("🔒 Login Required", "This video requires YouTube login to download. Please upload your cookies.txt file below.", back_link=False) + """
+    <form method="POST" enctype="multipart/form-data" style="margin-top:20px; text-align:center;">
+        <input type="file" name="cookies" accept=".txt" required>
+        <br><br>
+        <button type="submit" style="padding:10px 20px;">Upload Cookies</button>
+    </form>
+    """
 
 if __name__ == '__main__':
     os.makedirs("/tmp", exist_ok=True)
