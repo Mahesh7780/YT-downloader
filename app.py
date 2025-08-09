@@ -3,9 +3,9 @@ import yt_dlp
 import os
 
 app = Flask(__name__)
-app.secret_key = "replace_with_a_secure_secret_key"  # Needed for session storage
+app.secret_key = "replace_with_a_secure_secret_key"  # Needed for session handling
 
-COOKIE_PATH = "/tmp/cookies.txt"
+COOKIE_PATH = "cookies.txt"  # Persistent storage in app root
 
 QUALITY_LEVELS = {
     '360p': (360, 480),
@@ -61,23 +61,23 @@ def styled_message(title, message, back_link=True):
 @app.route('/', methods=['GET', 'POST'])
 def index():
     formats = []
-    url = ""
+    url = request.args.get("retry_url", "")
     message = ""
 
     if request.method == 'POST':
-        # Check if cookies were uploaded
+        # Handle cookies upload (if manually done from main page)
         if 'cookies' in request.files:
             file = request.files['cookies']
             if file and file.filename.endswith(".txt"):
                 file.save(COOKIE_PATH)
-                message = "✅ Cookies uploaded successfully."
-                # Retry the last failed download if it exists
+                session["cookies_uploaded"] = True
+                # Retry pending URL if available
                 if session.get("pending_url"):
-                    url = session["pending_url"]
-                    session.pop("pending_url")
-                else:
-                    return render_template('index.html', url="", formats=[], message=message)
+                    return redirect(url_for("index", retry_url=session.pop("pending_url")))
+                message = "✅ Cookies uploaded successfully."
+                return render_template('index.html', url="", formats=[], message=message)
 
+        # Get URL and format ID
         url = request.form.get('url', '').strip()
         format_id = request.form.get('format_id')
 
@@ -109,7 +109,7 @@ def index():
                 else:
                     return styled_message("⚠️ Download Failed", err_text)
 
-        # Step 2: Fetch available formats
+        # Step 2: Fetch formats
         elif url:
             try:
                 ydl_opts = {
@@ -130,13 +130,12 @@ def index():
                 ]
                 best_audio = max(audio_formats, key=lambda x: x['abr']) if audio_formats else None
 
-                # Quality mapping
+                # Filter formats by quality
                 quality_formats = {}
                 for f in all_formats:
                     height = f.get('height')
                     if not height:
                         continue
-
                     for label, (min_h, max_h) in QUALITY_LEVELS.items():
                         if min_h <= height < max_h and label not in quality_formats:
                             if f.get('acodec') != 'none':
@@ -145,16 +144,13 @@ def index():
                                 fmt_id = f"{f['format_id']}+bestaudio"
                             else:
                                 fmt_id = f['format_id']
-
                             size = f.get('filesize') or f.get('filesize_approx', 0)
                             size_str = f"{size // 1024 // 1024} MB" if size else "Unknown"
                             ext = f.get('ext', 'mp4')
-
                             quality_formats[label] = {
                                 'format_id': fmt_id,
                                 'label': f"{label} - {ext} - {size_str}"
                             }
-
                 ordered = ['360p', '720p', '1080p', '2K', '4K']
                 formats = [quality_formats[q] for q in ordered if q in quality_formats]
 
@@ -174,12 +170,10 @@ def upload_cookies():
         file = request.files.get('cookies')
         if file and file.filename.endswith(".txt"):
             file.save(COOKIE_PATH)
-            message = "✅ Cookies uploaded successfully."
+            session["cookies_uploaded"] = True
             if session.get("pending_url"):
-                url = session["pending_url"]
-                session.pop("pending_url")
-                return redirect(url_for("index"))
-            return render_template('index.html', url="", formats=[], message=message)
+                return redirect(url_for("index", retry_url=session.pop("pending_url")))
+            return render_template('index.html', url="", formats=[], message="✅ Cookies uploaded successfully.")
         else:
             return styled_message("⚠️ Invalid File", "Please upload a valid cookies.txt file.")
     return styled_message("🔒 Login Required", "This video requires YouTube login to download. Please upload your cookies.txt file below.", back_link=False) + """
