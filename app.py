@@ -1,11 +1,11 @@
-from flask import Flask, render_template, request, send_file, redirect, url_for, session
+from flask import Flask, render_template, request, send_file
 import yt_dlp
 import os
 
 app = Flask(__name__)
-app.secret_key = "replace_with_a_secure_secret_key"  # Needed for session handling
 
-COOKIE_PATH = "cookies.txt"  # Persistent storage in app root
+# Path to master cookies.txt file in app directory
+MASTER_COOKIE_PATH = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
 QUALITY_LEVELS = {
     '360p': (360, 480),
@@ -16,8 +16,7 @@ QUALITY_LEVELS = {
 }
 
 # Helper function for styled messages
-def styled_message(title, message, back_link=True):
-    back_button = '<a href="/">⬅ Back to Home</a>' if back_link else ''
+def styled_message(title, message):
     return f"""
     <html>
     <head>
@@ -53,7 +52,7 @@ def styled_message(title, message, back_link=True):
     <body>
         <h1>{title}</h1>
         <p>{message}</p>
-        {back_button}
+        <a href="/">⬅ Back to Home</a>
     </body>
     </html>
     """
@@ -61,23 +60,10 @@ def styled_message(title, message, back_link=True):
 @app.route('/', methods=['GET', 'POST'])
 def index():
     formats = []
-    url = request.args.get("retry_url", "")
+    url = ""
     message = ""
 
     if request.method == 'POST':
-        # Handle cookies upload (if manually done from main page)
-        if 'cookies' in request.files:
-            file = request.files['cookies']
-            if file and file.filename.endswith(".txt"):
-                file.save(COOKIE_PATH)
-                session["cookies_uploaded"] = True
-                # Retry pending URL if available
-                if session.get("pending_url"):
-                    return redirect(url_for("index", retry_url=session.pop("pending_url")))
-                message = "✅ Cookies uploaded successfully."
-                return render_template('index.html', url="", formats=[], message=message)
-
-        # Get URL and format ID
         url = request.form.get('url', '').strip()
         format_id = request.form.get('format_id')
 
@@ -90,8 +76,9 @@ def index():
                     'outtmpl': '/tmp/%(title)s.%(ext)s',
                     'quiet': True
                 }
-                if os.path.exists(COOKIE_PATH):
-                    ydl_opts['cookies'] = COOKIE_PATH
+                # Always use master cookies if available
+                if os.path.exists(MASTER_COOKIE_PATH):
+                    ydl_opts['cookies'] = MASTER_COOKIE_PATH
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
@@ -101,11 +88,10 @@ def index():
 
             except Exception as e:
                 err_text = str(e)
-                if "Sign in to confirm you’re not a bot" in err_text or "This video is private" in err_text:
-                    session["pending_url"] = url
-                    return redirect(url_for("upload_cookies"))
-                elif "Requested format is not available" in err_text:
+                if "Requested format is not available" in err_text:
                     return styled_message("❌ Quality Not Available", "This video is not available in the selected quality. Please choose another quality and try again.")
+                elif "Sign in to confirm you’re not a bot" in err_text:
+                    return styled_message("🔒 Login Required", "This video requires YouTube login. Please update the master cookies.txt file on the server.")
                 else:
                     return styled_message("⚠️ Download Failed", err_text)
 
@@ -116,8 +102,8 @@ def index():
                     'quiet': True,
                     'skip_download': True
                 }
-                if os.path.exists(COOKIE_PATH):
-                    ydl_opts['cookies'] = COOKIE_PATH
+                if os.path.exists(MASTER_COOKIE_PATH):
+                    ydl_opts['cookies'] = MASTER_COOKIE_PATH
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
@@ -156,33 +142,12 @@ def index():
 
             except Exception as e:
                 err_text = str(e)
-                if "Sign in to confirm you’re not a bot" in err_text or "This video is private" in err_text:
-                    session["pending_url"] = url
-                    return redirect(url_for("upload_cookies"))
+                if "Sign in to confirm you’re not a bot" in err_text:
+                    return styled_message("🔒 Login Required", "This video requires YouTube login. Please update the master cookies.txt file on the server.")
                 else:
                     return styled_message("⚠️ Could Not Fetch Formats", err_text)
 
     return render_template('index.html', url=url, formats=formats, message=message)
-
-@app.route('/upload-cookies', methods=['GET', 'POST'])
-def upload_cookies():
-    if request.method == 'POST':
-        file = request.files.get('cookies')
-        if file and file.filename.endswith(".txt"):
-            file.save(COOKIE_PATH)
-            session["cookies_uploaded"] = True
-            if session.get("pending_url"):
-                return redirect(url_for("index", retry_url=session.pop("pending_url")))
-            return render_template('index.html', url="", formats=[], message="✅ Cookies uploaded successfully.")
-        else:
-            return styled_message("⚠️ Invalid File", "Please upload a valid cookies.txt file.")
-    return styled_message("🔒 Login Required", "This video requires YouTube login to download. Please upload your cookies.txt file below.", back_link=False) + """
-    <form method="POST" enctype="multipart/form-data" style="margin-top:20px; text-align:center;">
-        <input type="file" name="cookies" accept=".txt" required>
-        <br><br>
-        <button type="submit" style="padding:10px 20px;">Upload Cookies</button>
-    </form>
-    """
 
 if __name__ == '__main__':
     os.makedirs("/tmp", exist_ok=True)
